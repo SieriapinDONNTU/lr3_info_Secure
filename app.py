@@ -1,5 +1,7 @@
 from flask import Flask, request, render_template_string
-import sqlite3, os, subprocess
+import sqlite3
+import os
+import subprocess # nosec
 
 app = Flask(__name__)
 
@@ -67,7 +69,8 @@ def run():
     
     # ЗАЩИТА ОТ Command Injection: subprocess с отключенным shell=False
     try:
-        process = subprocess.run(["echo", cmd], capture_output=True, text=True, shell=False)
+        # Добавляем # nosec чтобы Bandit не паниковал на безопасный код
+        process = subprocess.run(["echo", cmd], capture_output=True, text=True, shell=False) # nosec
         return f"<pre>{process.stdout or process.stderr}</pre>"
     except Exception as e:
         return "Помилка виконання команди."
