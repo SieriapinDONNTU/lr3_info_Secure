@@ -1,20 +1,21 @@
-''' 
-
-<script>alert("Hacked")</script>' 
-
-
-
-'''
-from flask import Flask, request
-import sqlite3, os
+from flask import Flask, request, render_template_string, abort
+import sqlite3
+import os
+import subprocess
+from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
 
-# 1. Створення бази даних (щоразу очищуємо для тестів)
+# Сховище для файлів (обмежуємо доступ лише цією папкою)
+UPLOAD_FOLDER = 'safe_files'
+if not os.path.exists(UPLOAD_FOLDER):
+    os.makedirs(UPLOAD_FOLDER)
+
 def init_db():
     with sqlite3.connect("users.db") as conn:
         conn.execute("CREATE TABLE IF NOT EXISTS users (username TEXT, password TEXT)")
         conn.execute("DELETE FROM users")
+        # У реальному житті паролі мають бути хешовані (напр. Werkzeug Security)
         conn.execute("INSERT INTO users VALUES ('admin', 'secret_password')")
         conn.commit()
 
@@ -26,32 +27,31 @@ def index():
     <style>
         body { font-family: sans-serif; max-width: 600px; margin: 40px auto; line-height: 1.6; }
         section { border: 1px solid #ccc; padding: 15px; margin-bottom: 20px; border-radius: 8px; }
-        input[type="text"] { width: 100%; margin-bottom: 10px; padding: 5px; }
     </style>
-    <h1>Стенд для тестування вразливостей</h1>
+    <h1>Захищений додаток</h1>
     
     <section>
-        <h3>1. SQL Injection та XSS</h3>
+        <h3>1. Захист від SQLi та XSS</h3>
         <form action="/login" method="post">
-            Логін: <input type="text" name="username" placeholder="admin' -- ">
-            Пароль: <input type="text" name="password" placeholder="будь-що">
+            Логін: <input type="text" name="username"><br>
+            Пароль: <input type="password" name="password"><br>
             <input type="submit" value="Увійти">
         </form>
     </section>
 
     <section>
-        <h3>2. Path Traversal</h3>
+        <h3>2. Захист від Path Traversal</h3>
         <form action="/file" method="get">
-            Назва файлу: <input type="text" name="name" placeholder="../../etc/passwd або app.py">
+            Назва файлу: <input type="text" name="name">
             <input type="submit" value="Читати файл">
         </form>
     </section>
 
     <section>
-        <h3>3. Command Injection</h3>
+        <h3>3. Захист від Command Injection</h3>
         <form action="/run" method="post">
-            Команда: <input type="text" name="cmd" placeholder="ls; id або dir & whoami">
-            <input type="submit" value="Виконати в системі">
+            Введіть IP для пінгу: <input type="text" name="ip">
+            <input type="submit" value="Перевірити зв'язок">
         </form>
     </section>
     '''
@@ -61,47 +61,64 @@ def login():
     username = request.form.get("username", "")
     password = request.form.get("password", "")
     
-    # Вразливість SQLi: пряма конкатенація
-    query = f"SELECT * FROM users WHERE username='{username}' AND password='{password}'"
-    print(f"[*] Виконується SQL запит: {query}") 
-
+    # ЗАХИСТ ВІД SQLi: Використовуємо параметризовані запити (?)
+    # Дані користувача не вставляються в рядок, а передаються окремо
+    query = "SELECT * FROM users WHERE username=? AND password=?"
+    
     try:
         with sqlite3.connect("users.db") as conn:
             cursor = conn.cursor()
-            cursor.execute(query)
+            cursor.execute(query, (username, password))
             result = cursor.fetchone()
             
             if result:
-                # Вразливість XSS: виводимо username прямо в HTML без очищення
-                return f"<h2>Вітаємо, {username}!</h2><p>Вхід виконано успішно.</p><a href='/'>Назад</a>"
+                # ЗАХИСТ ВІД XSS: render_template_string автоматично екранує змінні {{ }}
+                # Тобто <script> перетвориться на &lt;script&gt; і не виконається
+                return render_template_string("<h2>Вітаємо, {{ user }}!</h2><a href='/'>Назад</a>", user=username)
             else:
                 return "<h2>Помилка: Невірні дані.</h2><a href='/'>Назад</a>"
-    except Exception as e:
-        return f"<h2>Помилка SQL:</h2><pre>{e}</pre><a href='/'>Назад</a>"
+    except Exception:
+        return "Виникла внутрішня помилка."
 
 @app.route("/file", methods=["GET"])
 def file():
     filename = request.args.get("name", "")
+    
+    # ЗАХИСТ ВІД Path Traversal:
+    # 1. secure_filename видаляє "../../" та інші небезпечні символи
+    safe_name = secure_filename(filename)
+    # 2. Формуємо повний шлях лише всередині дозволеної папки
+    file_path = os.path.join(UPLOAD_FOLDER, safe_name)
+    
     try:
-        # Вразливість Path Traversal: відкриваємо шлях як є
-        print(f"[*] Спроба відкрити файл: {filename}")
-        with open(filename, "r", encoding="utf-8") as f:
+        if not os.path.exists(file_path):
+            return "Файл не знайдено."
+            
+        with open(file_path, "r", encoding="utf-8") as f:
             content = f.read()
-            return f"<h3>Вміст файлу {filename}:</h3><pre>{content}</pre><a href='/'>Назад</a>"
-    except Exception as e:
-        return f"<h2>Помилка файлової системи:</h2><pre>{e}</pre><a href='/'>Назад</a>"
+            return render_template_string("<h3>Вміст:</h3><pre>{{ data }}</pre><a href='/'>Назад</a>", data=content)
+    except Exception:
+        return "Помилка доступу."
 
 @app.route("/run", methods=["POST"])
 def run():
-    cmd = request.form.get("cmd", "")
-    print(f"[*] Виконується системна команда: {cmd}")
+    ip = request.form.get("ip", "")
+    
+    # ЗАХИСТ ВІД Command Injection:
+    # Замість os.popen(cmd) використовуємо subprocess.run з shell=False
+    # Це сприймає ввід користувача як ОДИН аргумент, а не як команду
     try:
-        # Вразливість Command Injection: виконання через оболонку (shell)
-        result = os.popen(cmd).read()
-        return f"<h3>Результат команди:</h3><pre>{result}</pre><a href='/'>Назад</a>"
+        # Ми дозволяємо лише команду 'ping' і передаємо IP як аргумент
+        process = subprocess.run(
+            ["ping", "-c", "1" if os.name != 'nt' else "-n", "1", ip],
+            capture_output=True, 
+            text=True, 
+            shell=False, # ЦЕ КЛЮЧОВИЙ МОМЕНТ ЗАХИСТУ
+            timeout=5
+        )
+        return f"<h3>Результат:</h3><pre>{process.stdout or process.stderr}</pre><a href='/'>Назад</a>"
     except Exception as e:
-        return f"<h2>Помилка виконання:</h2><pre>{e}</pre><a href='/'>Назад</a>"
+        return f"Помилка: {str(e)}"
 
 if __name__ == "__main__":
-    # Запускаємо на порту 5003
-    app.run(host="127.0.0.1", port=5003, debug=True)
+    app.run(port=5003)
