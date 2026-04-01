@@ -19,4 +19,4 @@ jobs:
           bandit -r app.py
       - name: Run Security Tests (Dynamic Analysis)
         run: |
-          pytest tests/test_security.py
+          python -m pytest tests/test_security.py
