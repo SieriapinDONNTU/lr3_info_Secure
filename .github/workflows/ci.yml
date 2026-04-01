@@ -1,0 +1,22 @@
+name: Security Analysis
+
+on: [push]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+      - name: Install dependencies
+        run: |
+          pip install flask pytest bandit
+      - name: Run Bandit (Static Analysis)
+        run: |
+          bandit -r app.py
+      - name: Run Security Tests (Dynamic Analysis)
+        run: |
+          pytest tests/test_security.py
